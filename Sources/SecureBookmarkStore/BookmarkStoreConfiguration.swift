@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Customise the storage file name, stale-bookmark handling, and logging.
 public struct BookmarkStoreConfiguration: Sendable {
-    /// File name used inside `~/Library/Application Support/` to persist bookmarks.
-    /// Use a unique name per app to avoid collisions (e.g. `"com.myapp.bookmarks.data"`).
+    /// File name used inside the app's sandboxed `Application Support` directory.
+    /// Customize only if you need multiple independent stores within one app.
     public var fileName: String
 
     /// When `true`, stale bookmarks are silently renewed while the security scope

@@ -47,17 +47,13 @@ Or in Xcode: **File → Add Package Dependencies…** and paste the repository U
 ```swift
 import SecureBookmarkStore
 
-let bookmarkStore = BookmarkStore(
-    configuration: .init(fileName: "com.myapp.bookmarks.data")
-)
+let bookmarkStore = BookmarkStore()
 ```
-
-> Use a unique `fileName` per app to avoid collisions if you ship multiple apps.
 
 ### 2. Restore bookmarks on launch
 
 ```swift
-// In your AppDelegate or App.init:
+// At app launch:
 let result = try await bookmarkStore.loadAll()
 print("Restored \(result.restored)/\(result.total) bookmarks")
 ```
@@ -110,7 +106,7 @@ try await bookmarkStore.clearAll()
 ```swift
 let store = BookmarkStore(
     configuration: BookmarkStoreConfiguration(
-        fileName: "com.myapp.bookmarks.data",   // unique per app
+        fileName: "bookmarks.data",               // default; customize if you need multiple stores
         autoRenewStaleBookmarks: true,           // default: true
         logHandler: { level, message in          // optional
             print("[\(level.rawValue)] \(message)")
