@@ -87,13 +87,16 @@ struct ErrorTests {
         #expect(corrupted.errorDescription?.contains("corrupted") == true)
 
         let writeFail = BookmarkStoreError.writeFailed(underlying: NSError(domain: "test", code: 1))
-        #expect(writeFail.errorDescription?.contains("write") != nil)
+        #expect(writeFail.errorDescription?.contains("write") == true)
 
         let createFail = BookmarkStoreError.bookmarkCreationFailed(
             url: URL(fileURLWithPath: "/tmp/doc.pdf"),
             underlying: NSError(domain: "test", code: 2)
         )
         #expect(createFail.errorDescription?.contains("doc.pdf") == true)
+
+        let scopeDenied = BookmarkStoreError.scopeAccessDenied(url: URL(fileURLWithPath: "/tmp/secret.pdf"))
+        #expect(scopeDenied.errorDescription?.contains("secret.pdf") == true)
     }
 }
 
@@ -145,6 +148,82 @@ struct BookmarkStoreBasicTests {
         })
         _ = try await store.loadAll()
         #expect(messages.withLock { $0 }.contains(where: { $0.0 == .info }))
+    }
+}
+
+// MARK: - Scope Lifecycle
+
+@Suite("BookmarkStore — Scope Lifecycle")
+struct BookmarkStoreScopeLifecycleTests {
+    @Test("save activates scope immediately")
+    func saveActivatesScope() async throws {
+        let store = makeStore()
+        let file = try makeTempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        try await store.save(url: file)
+
+        // Scope should be active without needing loadAll()
+        #expect(await store.hasActiveScope(for: file) == true)
+        #expect(await store.resolvedURL(for: file) != nil)
+
+        try await store.clearAll()
+    }
+
+    @Test("Repeated save for same URL does not leak scopes")
+    func repeatedSaveNoLeak() async throws {
+        let store = makeStore()
+        let file = try makeTempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        // Save the same URL multiple times
+        try await store.save(url: file)
+        try await store.save(url: file)
+        try await store.save(url: file)
+
+        // Should still have exactly one active scope
+        #expect(await store.activeScopedURLs.count == 1)
+        #expect(await store.hasActiveScope(for: file) == true)
+
+        try await store.clearAll()
+    }
+
+    @Test("Repeated loadAll does not leak scopes")
+    func repeatedLoadAllNoLeak() async throws {
+        let fileName = "test-\(UUID().uuidString).data"
+        let file = try makeTempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let store = makeStore(fileName: fileName)
+        try await store.save(url: file)
+
+        // Load multiple times
+        _ = try await store.loadAll()
+        _ = try await store.loadAll()
+        _ = try await store.loadAll()
+
+        // Should still have exactly one active scope
+        #expect(await store.activeScopedURLs.count == 1)
+
+        try await store.clearAll()
+    }
+
+    @Test("load(for:) on already-active scope does not leak")
+    func repeatedLoadForNoLeak() async throws {
+        let fileName = "test-\(UUID().uuidString).data"
+        let file = try makeTempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        let store = makeStore(fileName: fileName)
+        try await store.save(url: file)
+
+        // Load the same URL again
+        _ = try await store.load(for: file)
+        _ = try await store.load(for: file)
+
+        #expect(await store.activeScopedURLs.count == 1)
+
+        try await store.clearAll()
     }
 }
 

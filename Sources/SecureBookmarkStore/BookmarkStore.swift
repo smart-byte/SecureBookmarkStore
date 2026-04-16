@@ -57,11 +57,22 @@ public actor BookmarkStore {
     ///
     /// - Parameter url: The URL to bookmark. Must be accessible at the time of calling.
     /// - Throws: ``BookmarkStoreError/bookmarkCreationFailed(url:underlying:)`` or
+    ///   ``BookmarkStoreError/scopeAccessDenied(url:)`` or
     ///   ``BookmarkStoreError/writeFailed(underlying:)``.
     public func save(url: URL) throws {
-        var dictionary = loadDictionaryOrEmpty()
-        dictionary[url] = try createBookmarkData(for: url)
+        let previousDictionary = try readDictionary()
+        var dictionary = previousDictionary
+        let bookmarkData = try createBookmarkData(for: url)
+        dictionary[url] = bookmarkData
         try writeDictionary(dictionary)
+
+        do {
+            try restoreBookmark(originalURL: url, data: bookmarkData)
+        } catch {
+            try rollbackSave(to: previousDictionary, restoring: [url])
+            throw error
+        }
+
         log(.info, "Saved bookmark for \(url.lastPathComponent)")
     }
 
@@ -72,11 +83,25 @@ public actor BookmarkStore {
     ///
     /// - Parameter urls: The URLs to bookmark.
     public func save(urls: [URL]) throws {
-        var dictionary = loadDictionaryOrEmpty()
+        let previousDictionary = try readDictionary()
+        var dictionary = previousDictionary
+        var bookmarks: [(URL, Data)] = []
         for url in urls {
-            dictionary[url] = try createBookmarkData(for: url)
+            let data = try createBookmarkData(for: url)
+            dictionary[url] = data
+            bookmarks.append((url, data))
         }
         try writeDictionary(dictionary)
+
+        do {
+            for (url, data) in bookmarks {
+                try restoreBookmark(originalURL: url, data: data)
+            }
+        } catch {
+            try rollbackSave(to: previousDictionary, restoring: urls)
+            throw error
+        }
+
         log(.info, "Saved \(urls.count) bookmark(s)")
     }
 
@@ -98,11 +123,8 @@ public actor BookmarkStore {
         var failed = 0
         for (url, data) in dictionary {
             do {
-                if try restoreBookmark(originalURL: url, data: data) {
-                    restored += 1
-                } else {
-                    failed += 1
-                }
+                try restoreBookmark(originalURL: url, data: data)
+                restored += 1
             } catch {
                 log(.warning, "Skipping bookmark for \(url.lastPathComponent): \(error.localizedDescription)")
                 failed += 1
@@ -124,7 +146,8 @@ public actor BookmarkStore {
     public func load(for url: URL) throws -> Bool {
         let dictionary = try readDictionary()
         guard let data = dictionary[url] else { return false }
-        return try restoreBookmark(originalURL: url, data: data)
+        try restoreBookmark(originalURL: url, data: data)
+        return true
     }
 
     // MARK: - Public API — Query
@@ -166,7 +189,7 @@ public actor BookmarkStore {
     /// - Parameter url: The original URL.
     public func remove(url: URL) throws {
         stopAccessing(url: url)
-        var dictionary = loadDictionaryOrEmpty()
+        var dictionary = try readDictionary()
         dictionary[url] = nil
         try writeDictionary(dictionary)
         log(.info, "Removed bookmark for \(url.lastPathComponent)")
@@ -179,7 +202,7 @@ public actor BookmarkStore {
         for url in urls {
             stopAccessing(url: url)
         }
-        var dictionary = loadDictionaryOrEmpty()
+        var dictionary = try readDictionary()
         for url in urls {
             dictionary[url] = nil
         }
@@ -220,8 +243,7 @@ public actor BookmarkStore {
 
     // MARK: - Internal — Bookmark Operations
 
-    @discardableResult
-    private func restoreBookmark(originalURL: URL, data: Data) throws -> Bool {
+    private func restoreBookmark(originalURL: URL, data: Data) throws {
         var isStale = false
 
         let resolvedURL = try URL(
@@ -232,22 +254,30 @@ public actor BookmarkStore {
         )
 
         guard resolvedURL.startAccessingSecurityScopedResource() else {
-            log(.warning, "Scope access denied: \(resolvedURL.lastPathComponent)")
-            return false
+            log(.error, "Scope access denied: \(resolvedURL.lastPathComponent)")
+            throw BookmarkStoreError.scopeAccessDenied(url: resolvedURL)
+        }
+
+        // Stop any previously active scope for this URL to prevent leaking
+        // unbalanced startAccessingSecurityScopedResource() calls.
+        if let previousScope = activeScopes[originalURL] {
+            previousScope.stopAccessingSecurityScopedResource()
         }
 
         activeScopes[originalURL] = resolvedURL
 
         if isStale, configuration.autoRenewStaleBookmarks {
             log(.info, "Renewing stale bookmark: \(resolvedURL.lastPathComponent)")
-            if let fresh = try? createBookmarkData(for: resolvedURL) {
-                var dictionary = loadDictionaryOrEmpty()
+            do {
+                let fresh = try createBookmarkData(for: resolvedURL)
+                var dictionary = try readDictionary()
                 dictionary[originalURL] = fresh
-                try? writeDictionary(dictionary)
+                try writeDictionary(dictionary)
+            } catch {
+                log(.warning, "Failed to renew stale bookmark for \(resolvedURL.lastPathComponent): \(error.localizedDescription)")
             }
         }
 
-        return true
     }
 
     private func createBookmarkData(for url: URL) throws -> Data {
@@ -278,19 +308,42 @@ public actor BookmarkStore {
         return result
     }
 
-    private func loadDictionaryOrEmpty() -> [URL: Data] {
-        (try? readDictionary()) ?? [:]
-    }
-
     private func writeDictionary(_ dictionary: [URL: Data]) throws {
         do {
+            let url = storageURL
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
             let data = try NSKeyedArchiver.archivedData(
                 withRootObject: dictionary,
                 requiringSecureCoding: true
             )
-            try data.write(to: storageURL, options: .atomic)
+            try data.write(to: url, options: .atomic)
         } catch {
             throw BookmarkStoreError.writeFailed(underlying: error)
+        }
+    }
+
+    private func rollbackSave(to dictionary: [URL: Data], restoring urls: [URL]) throws {
+        for url in urls {
+            stopAccessing(url: url)
+        }
+
+        do {
+            try writeDictionary(dictionary)
+        } catch {
+            log(.error, "Failed to roll back bookmark persistence: \(error.localizedDescription)")
+            throw error
+        }
+
+        for url in urls {
+            guard let previousData = dictionary[url] else { continue }
+            do {
+                try restoreBookmark(originalURL: url, data: previousData)
+            } catch {
+                log(.warning, "Failed to restore previous scope for \(url.lastPathComponent): \(error.localizedDescription)")
+            }
         }
     }
 

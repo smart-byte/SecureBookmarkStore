@@ -84,9 +84,6 @@ await bookmarkStore.hasActiveScope(for: url)
 
 // Active scope AND file exists on disk?
 await bookmarkStore.isAccessible(url)
-
-// Reachable via scope OR plain filesystem? (softer check)
-await bookmarkStore.isReachable(url)
 ```
 
 ### 6. Clean up
@@ -184,7 +181,7 @@ do {
     case .bookmarkCreationFailed(let url, let underlying):
         // Could not create bookmark — file may not be accessible
     case .scopeAccessDenied(let url):
-        // macOS denied the security scope — re-authorize via NSOpenPanel
+        // Bookmark was created, but macOS refused to activate scoped access
     case .writeFailed(let underlying):
         // Disk write failed — check permissions / disk space
     }
