@@ -1,5 +1,11 @@
 # SecureBookmarkStore
 
+![Swift 6.0](https://img.shields.io/badge/Swift-6.0-orange)
+![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)
+![Platform macOS](https://img.shields.io/badge/Platform-macOS-lightgrey)
+[![License MIT](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/smart-byte/SecureBookmarkStore)](https://github.com/smart-byte/SecureBookmarkStore/releases)
+
 A thread-safe, `actor`-based Swift package for managing **macOS security-scoped bookmarks** in sandboxed apps.
 
 Security-scoped bookmarks let your sandboxed macOS app persist access to user-selected files and folders across launches. `SecureBookmarkStore` wraps the verbose, error-prone `URL.bookmarkData` / `URL(resolvingBookmarkData:)` dance into a clean, modern API.

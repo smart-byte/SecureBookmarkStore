@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+jobs:
+  test:
+    name: Test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  release:
+    name: Create Release
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag does not exist
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.version.outputs.tag }}$"; then
+            echo "::error::Tag ${{ steps.version.outputs.tag }} already exists. Bump the VERSION file."
+            exit 1
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
