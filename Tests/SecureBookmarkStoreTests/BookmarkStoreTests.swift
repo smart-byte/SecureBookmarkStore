@@ -23,11 +23,13 @@ final class LockIsolated<Value: Sendable>: @unchecked Sendable {
 private func makeStore(
     fileName: String = "test-\(UUID().uuidString).data",
     autoRenew: Bool = true,
+    prune: Bool = false,
     logHandler: (@Sendable (BookmarkStoreConfiguration.LogLevel, String) -> Void)? = nil
 ) -> BookmarkStore {
     BookmarkStore(configuration: .init(
         fileName: fileName,
         autoRenewStaleBookmarks: autoRenew,
+        pruneUnresolvableBookmarks: prune,
         logHandler: logHandler
     ))
 }
@@ -622,4 +624,59 @@ struct BookmarkStoreLoggingTests {
         let levels = messages.withLock { $0 }
         #expect(levels.contains(.info))
     }
+}
+
+
+// MARK: - Pruning unresolvable bookmarks
+
+@Test("Deleted files are pruned when pruning is enabled")
+func pruneRemovesDeadBookmarks() async throws {
+    let fileName = "test-\(UUID().uuidString).data"
+    let store = makeStore(fileName: fileName, prune: true)
+
+    let keep = try makeTempFile()
+    let doomed = try makeTempFile()
+    try await store.save(urls: [keep, doomed])
+
+    try FileManager.default.removeItem(at: doomed)
+
+    let result = try await store.loadAll()
+    #expect(result.total == 2)
+    #expect(result.restored == 1)
+    #expect(result.failedURLs == [doomed])
+    #expect(result.pruned == 1)
+
+    // The dead entry is gone from disk, the live one survived.
+    let second = try await store.loadAll()
+    #expect(second.total == 1)
+    #expect(second.restored == 1)
+    #expect(second.pruned == 0)
+}
+
+@Test("Pruning is off by default, so nothing is deleted behind the caller's back")
+func pruningIsOptIn() async throws {
+    let fileName = "test-\(UUID().uuidString).data"
+    let store = makeStore(fileName: fileName)
+
+    let doomed = try makeTempFile()
+    try await store.save(url: doomed)
+    try FileManager.default.removeItem(at: doomed)
+
+    let result = try await store.loadAll()
+    #expect(result.failed == 1)
+    #expect(result.pruned == 0)
+    // Entry is still on disk.
+    #expect(try await store.loadAll().total == 1)
+}
+
+@Test("A bookmark on an unmounted volume is kept, not pruned")
+func unmountedVolumeIsNotPruned() async throws {
+    let store = makeStore(prune: true)
+    let missingVolume = URL(fileURLWithPath: "/Volumes/NotMounted-\(UUID().uuidString)/photo.png")
+    let deletedLocal = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("gone-\(UUID().uuidString).png")
+
+    // The unplugged drive must survive; the deleted local file must not.
+    #expect(await store.isPermanentlyGoneForTesting(missingVolume) == false)
+    #expect(await store.isPermanentlyGoneForTesting(deletedLocal) == true)
 }

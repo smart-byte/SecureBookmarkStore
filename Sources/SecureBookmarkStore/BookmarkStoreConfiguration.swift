@@ -12,6 +12,13 @@ public struct BookmarkStoreConfiguration: Sendable {
     /// is still active. When `false`, stale bookmarks are reported but left as-is.
     public var autoRenewStaleBookmarks: Bool
 
+    /// When `true`, ``BookmarkStore/loadAll()`` deletes bookmarks whose target is
+    /// permanently gone, so dead entries don't accumulate and re-warn on every launch.
+    ///
+    /// Entries are only pruned when their containing volume is currently mounted —
+    /// a bookmark on an unplugged external drive is kept, not discarded.
+    public var pruneUnresolvableBookmarks: Bool
+
     /// Optional closure invoked for every notable event (info, warning, error).
     /// Integrate with `os.log`, `swift-log`, or any logging system you prefer.
     public var logHandler: (@Sendable (LogLevel, String) -> Void)?
@@ -27,16 +34,19 @@ public struct BookmarkStoreConfiguration: Sendable {
     public static let `default` = BookmarkStoreConfiguration(
         fileName: "bookmarks.data",
         autoRenewStaleBookmarks: true,
+        pruneUnresolvableBookmarks: false,
         logHandler: nil
     )
 
     public init(
         fileName: String = "bookmarks.data",
         autoRenewStaleBookmarks: Bool = true,
+        pruneUnresolvableBookmarks: Bool = false,
         logHandler: (@Sendable (LogLevel, String) -> Void)? = nil
     ) {
         self.fileName = fileName
         self.autoRenewStaleBookmarks = autoRenewStaleBookmarks
+        self.pruneUnresolvableBookmarks = pruneUnresolvableBookmarks
         self.logHandler = logHandler
     }
 }
