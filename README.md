@@ -108,12 +108,30 @@ let store = BookmarkStore(
     configuration: BookmarkStoreConfiguration(
         fileName: "bookmarks.data",               // default; customize if you need multiple stores
         autoRenewStaleBookmarks: true,           // default: true
+        pruneUnresolvableBookmarks: false,       // default: false — see below
         logHandler: { level, message in          // optional
             print("[\(level.rawValue)] \(message)")
         }
     )
 )
 ```
+
+### Pruning dead bookmarks
+
+Bookmarks whose target file is deleted stay on disk forever and re-warn on every
+launch. Enable `pruneUnresolvableBookmarks` to have `loadAll()` drop them:
+
+```swift
+let result = try await store.loadAll()
+result.failedURLs   // what could not be restored
+result.pruned       // how many dead entries were deleted
+```
+
+Pruning is deliberately conservative: an entry is only removed when its target is
+gone *and* its location is currently reachable. A bookmark on an unplugged external
+drive or a disconnected network share is kept, so unplugging a disk never costs you
+your bookmarks. It is opt-in (default `false`) so upgrading never deletes data
+behind your back.
 
 ### Integrating with `swift-log`
 

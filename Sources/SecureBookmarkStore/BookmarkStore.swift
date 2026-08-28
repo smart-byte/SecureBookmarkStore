@@ -120,19 +120,42 @@ public actor BookmarkStore {
         log(.info, "Loaded \(dictionary.count) bookmark(s) from disk")
 
         var restored = 0
-        var failed = 0
+        var failedURLs: [URL] = []
+        var prunableURLs: [URL] = []
         for (url, data) in dictionary {
             do {
                 try restoreBookmark(originalURL: url, data: data)
                 restored += 1
             } catch {
                 log(.warning, "Skipping bookmark for \(url.lastPathComponent): \(error.localizedDescription)")
-                failed += 1
+                failedURLs.append(url)
+                if isPermanentlyGone(url) {
+                    prunableURLs.append(url)
+                }
+            }
+        }
+
+        if configuration.pruneUnresolvableBookmarks, !prunableURLs.isEmpty {
+            var remaining = dictionary
+            for url in prunableURLs {
+                remaining.removeValue(forKey: url)
+            }
+            do {
+                try writeDictionary(remaining)
+                log(.info, "Pruned \(prunableURLs.count) unresolvable bookmark(s)")
+            } catch {
+                log(.warning, "Failed to prune unresolvable bookmarks: \(error.localizedDescription)")
             }
         }
 
         log(.info, "Restored \(restored)/\(dictionary.count) bookmark(s)")
-        return LoadResult(total: dictionary.count, restored: restored, failed: failed)
+        return LoadResult(
+            total: dictionary.count,
+            restored: restored,
+            failed: failedURLs.count,
+            failedURLs: failedURLs,
+            pruned: configuration.pruneUnresolvableBookmarks ? prunableURLs.count : 0
+        )
     }
 
     /// Loads and restores a single persisted bookmark.
@@ -280,6 +303,43 @@ public actor BookmarkStore {
 
     }
 
+    /// Whether a failed bookmark's target is gone for good, rather than merely
+    /// unavailable right now.
+    ///
+    /// A bookmark on an unmounted volume (unplugged drive, disconnected share) must
+    /// survive — so an entry only counts as permanently gone when the closest
+    /// existing ancestor directory is reachable and the file itself is absent.
+    #if DEBUG
+        /// Test seam for the volume-safety heuristic.
+        func isPermanentlyGoneForTesting(_ url: URL) -> Bool { isPermanentlyGone(url) }
+    #endif
+
+    private func isPermanentlyGone(_ url: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        if FileManager.default.fileExists(atPath: url.path) { return false }
+
+        // An unmounted volume looks exactly like a deleted folder, so check the
+        // mount point explicitly: /Volumes/<name> missing means the drive is away.
+        let components = URL(fileURLWithPath: url.path).pathComponents
+        if components.count > 2, components[1] == "Volumes" {
+            let mountPoint = "/\(components[1])/\(components[2])"
+            if !FileManager.default.fileExists(atPath: mountPoint) { return false }
+        }
+
+        // Walk up until we hit a directory that exists. If we reach the root
+        // without finding one, the volume itself is missing — keep the bookmark.
+        var parent = url.deletingLastPathComponent()
+        while parent.path != "/" && !parent.path.isEmpty {
+            if FileManager.default.fileExists(atPath: parent.path) {
+                return true
+            }
+            let next = parent.deletingLastPathComponent()
+            if next == parent { break }
+            parent = next
+        }
+        return false
+    }
+
     private func createBookmarkData(for url: URL) throws -> Data {
         do {
             return try url.bookmarkData(
@@ -365,5 +425,10 @@ public extension BookmarkStore {
         public let restored: Int
         /// Number of bookmarks that could not be restored.
         public let failed: Int
+        /// The URLs that could not be restored, in no particular order.
+        public let failedURLs: [URL]
+        /// Number of dead bookmarks removed from disk during this load.
+        /// Always `0` unless ``BookmarkStoreConfiguration/pruneUnresolvableBookmarks`` is enabled.
+        public let pruned: Int
     }
 }
